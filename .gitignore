@@ -7,3 +7,6 @@ myenv
 # Pycache
 .ipynb_checkpoints
 __pycache__
+
+# Data
+*.csv
