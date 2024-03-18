@@ -9,4 +9,5 @@ myenv
 __pycache__
 
 # Data
+*.json
 *.csv
