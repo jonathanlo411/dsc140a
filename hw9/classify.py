@@ -1,6 +1,8 @@
 import numpy as np
 import pandas as pd
 from scipy.stats import mode
+import numpy as np
+from scipy.linalg import cholesky, solve_triangular
 
 def count_syllables(word: str) -> int:
     vowels = 'aeiouy'
@@ -51,109 +53,122 @@ def generate_features(word: str) -> pd.Series:
     
     return pd.Series(conditions)
 
-class DecisionTree:
-    def __init__(self, max_depth=None):
+class Node:
+    def __init__(self, feature_index=None, threshold=None, left=None, right=None, value=None):
+        self.feature_index = feature_index
+        self.threshold = threshold
+        self.left = left
+        self.right = right
+        self.value = value
+
+class DecisionTreeClassifier:
+    def __init__(self, max_depth=None, min_samples_split=2, min_samples_leaf=1, max_features=None, impurity_measure='gini'):
         self.max_depth = max_depth
+        self.min_samples_split = min_samples_split
+        self.min_samples_leaf = min_samples_leaf
+        self.max_features = max_features
+        self.impurity_measure = impurity_measure
+        self.root = None
 
-    def fit(self, X, y):
-        self.n_classes = len(np.unique(y))
-        self.tree = self._grow_tree(X, y)
+    def gini_impurity(self, y):
+        _, counts = np.unique(y, return_counts=True)
+        probabilities = counts / len(y)
+        gini = 1 - np.sum(probabilities ** 2)
+        return gini
 
-    def _grow_tree(self, X, y, depth=0):
-        n_samples, n_features = X.shape
-        n_labels = len(np.unique(y))
+    def entropy(self, y):
+        _, counts = np.unique(y, return_counts=True)
+        probabilities = counts / len(y)
+        entropy = -np.sum(probabilities * np.log2(probabilities))
+        return entropy
 
-        if (self.max_depth is not None and depth >= self.max_depth) or n_labels == 1 or n_samples < 2:
-            return {'label': mode(y)[0][0]}
+    def impurity(self, y):
+        if self.impurity_measure == 'gini':
+            return self.gini_impurity(y)
+        elif self.impurity_measure == 'entropy':
+            return self.entropy(y)
 
-        # Find best split
-        best_gini = np.inf
-        best_feature, best_threshold = None, None
-        for feature_idx in range(n_features):
-            thresholds = np.unique(X[:, feature_idx])
-            for threshold in thresholds:
-                left_indices = np.where(X[:, feature_idx] <= threshold)[0]
-                right_indices = np.where(X[:, feature_idx] > threshold)[0]
-                if len(left_indices) == 0 or len(right_indices) == 0:
-                    continue
-                gini = self._gini_impurity(y[left_indices], y[right_indices])
-                if gini < best_gini:
-                    best_gini = gini
-                    best_feature = feature_idx
-                    best_threshold = threshold
+    def information_gain(self, X, y, feature_index):
+        left_indices = X.iloc[:, feature_index] <= X.iloc[:, feature_index].median()
+        right_indices = ~left_indices
+        left_y = y[left_indices]
+        right_y = y[right_indices]
+        parent_impurity = self.impurity(y)
+        left_impurity = self.impurity(left_y)
+        right_impurity = self.impurity(right_y)
+        left_weight = len(left_y) / len(y)
+        right_weight = len(right_y) / len(y)
+        info_gain = parent_impurity - (left_weight * left_impurity + right_weight * right_impurity)
+        return info_gain
+
+    def build_tree(self, X, y, depth=0):
+        num_samples, num_features = X.shape
+
+        if self.max_features is not None:
+            feature_indices = np.random.choice(num_features, self.max_features, replace=False)
+        else:
+            feature_indices = range(num_features)
+
+        best_gain = 0
+        best_feature = None
+
+        if (np.all(y == y[0]) or
+            depth == self.max_depth or
+            len(y) < self.min_samples_split or
+            len(np.unique(y)) == 1):
+            return Node(value=np.bincount(y).argmax())
+
+        for feature_index in feature_indices:
+            gain = self.information_gain(X, y, feature_index)
+            if gain > best_gain:
+                best_gain = gain
+                best_feature = feature_index
 
         if best_feature is None:
-            return {'label': 0}
-            return {'label': mode(y)[0][0]}  # If no valid split found, return the majority class
-        
-        left_indices = np.where(X[:, best_feature] <= best_threshold)[0]
-        right_indices = np.where(X[:, best_feature] > best_threshold)[0]
+            return Node(value=np.bincount(y).argmax())
 
-        # Grow left and right subtrees
-        left_subtree = self._grow_tree(X[left_indices], y[left_indices], depth + 1)
-        right_subtree = self._grow_tree(X[right_indices], y[right_indices], depth + 1)
+        threshold = X.iloc[:, best_feature].median()
+        left_indices = np.where(X.iloc[:, best_feature] <= threshold)[0]
+        right_indices = np.where(X.iloc[:, best_feature] > threshold)[0]
 
-        return {'feature_idx': best_feature,
-                'threshold': best_threshold,
-                'left': left_subtree,
-                'right': right_subtree}
+        if len(left_indices) < self.min_samples_leaf or len(right_indices) < self.min_samples_leaf:
+            return Node(value=np.bincount(y).argmax())
 
-    def _gini_impurity(self, left_y, right_y):
-        p_left = len(left_y) / (len(left_y) + len(right_y))
-        p_right = len(right_y) / (len(left_y) + len(right_y))
-        return p_left * (1 - np.sum(np.square(np.bincount(left_y) / len(left_y)))) + \
-               p_right * (1 - np.sum(np.square(np.bincount(right_y) / len(right_y))))
-
-    def predict(self, X):
-        return np.array([self._predict_tree(x, self.tree) for x in X])
-
-    def _predict_tree(self, x, tree):
-        if 'label' in tree:
-            return tree['label']
-        else:
-            if x[tree['feature_idx']] <= tree['threshold']:
-                return self._predict_tree(x, tree['left'])
-            else:
-                return self._predict_tree(x, tree['right'])
-
-class RandomForest:
-    def __init__(self, n_estimators=100, max_depth=None, max_features=None, bootstrap=True):
-        self.n_estimators = n_estimators
-        self.max_depth = max_depth
-        self.max_features = max_features
-        self.bootstrap = bootstrap
-        self.trees = []
+        left_X = X.iloc[left_indices, :]
+        right_X = X.iloc[right_indices, :]
+        left_y = y[left_indices]
+        right_y = y[right_indices]
+        left_node = self.build_tree(left_X, left_y, depth + 1)
+        right_node = self.build_tree(right_X, right_y, depth + 1)
+        return Node(best_feature, threshold, left_node, right_node)
 
     def fit(self, X, y):
-        n_samples, n_features = X.shape
-        if not self.max_features:
-            self.max_features = int(np.sqrt(n_features))
-
-        for _ in range(self.n_estimators):
-            if self.bootstrap:
-                indices = np.random.choice(n_samples, n_samples, replace=True)
-            else:
-                indices = np.arange(n_samples)
-            X_bootstrap = X[indices]
-            y_bootstrap = y[indices]
-
-            tree = DecisionTree(max_depth=self.max_depth)
-            tree.fit(X_bootstrap, y_bootstrap)
-            self.trees.append(tree)
+        self.root = self.build_tree(X, y)
 
     def predict(self, X):
-        predictions = np.array([tree.predict(X) for tree in self.trees])
-        return mode(predictions)[0][0]
-
-
+        predictions = np.zeros(X.shape[0])
+        for i, row in X.iterrows():
+            node = self.root
+            while node.left and node.right:
+                if row[node.feature_index] <= node.threshold:
+                    node = node.left
+                else:
+                    node = node.right
+            predictions[i] = node.value
+        return predictions
 
 def classify(train_words, train_labels, test_words):
     # Generate Features
     proccess_y = lambda y_set: np.array([word == 'spanish' for word in y_set])
-    X_train = np.array([generate_features(word).to_numpy() for word in train_words])
+    X_train = pd.DataFrame([generate_features(word) for word in train_words])
     y_train = proccess_y(train_labels)
-    X_test = np.array([generate_features(word).to_numpy() for word in test_words])
+    X_test = pd.DataFrame([generate_features(word) for word in test_words])
 
-    rf = RandomForest(n_estimators=100, max_depth=10)
+    rf = DecisionTreeClassifier(
+        max_depth=7,
+        min_samples_split=2,
+        max_features=8,
+        impurity_measure='entropy'
+    )
     rf.fit(X_train, y_train)
     return ['spanish' if item == 1 else 'french' for item in rf.predict(X_test)]
